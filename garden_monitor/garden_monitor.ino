@@ -4,31 +4,31 @@
 int calibrationTime = 1;
 
 //the time when the sensor outputs a low impulse
-long unsigned int lowIn;
-long unsigned int highIn;
-long unsigned int onTime = 0;
-long unsigned int startWatering = 0;
+long unsigned int detectTime = 0;
+long unsigned int valveOpenTime = 0;
+long unsigned int wateringTime = 0;
 
+long unsigned int wateringPeriod = 1800000;
 // The amount of milliseconds the sensor has to be low before we assume all
 // motion has stopped
-long unsigned int pause = 3000;
-long unsigned int minHighTime = 1500;
-long unsigned int maxHighTime = 10000;
-long unsigned int expDelay = 4000;
-
-boolean motion = false;
-boolean takeLowTime;
-boolean takeHighTime = true;
-
+long unsigned int minDetectTime = 1500;
+long unsigned int maxDetectTime = 5000;
+long unsigned int minTimeSinceOn = 7000;
 
 //Define the states of the machine
-#define ON_WAIT 0
-#define ON 1
-#define OFF 2
-#define OFF_WAIT 3
+#define DETECT_OFF 0
+#define DETECT_OFF_WAIT 1
+#define DETECT_ON 2
+#define DETECT_ON_WAIT 3
+#define WATER_OFF 4
+#define WATER_ON 5
+#define WATER_ON_WAIT 6
+#define BUTTON_PRESSED 7
 
 //This is the memory element that contains the state variable
-uint8_t fsm_state = OFF;
+uint8_t fsm_detect_state = DETECT_OFF;
+uint8_t fsm_water_state = WATER_OFF;
+uint8_t fsm_water_prev_state = WATER_OFF;
 
 // The digital pin connected to the PIR sensor's output
 int pirPin = 3;
@@ -44,9 +44,9 @@ void setup()
     Console.begin(); 
 
     // REMOVE IF NOT CONNECTING TO CONSOLE
-    while (!Console){
-        ; // wait for Console port to connect.
-    }
+    /*while (!Console){*/
+        /*; // wait for Console port to connect.*/
+    /*}*/
     Console.println("console connected, commencing script");
 
     /*Serial.begin(9600);*/
@@ -80,55 +80,57 @@ void setup()
 // Loop
 void loop()
 {
-    /*water();*/
+    water();
 
-    if(startWatering == 0) {
-        detect2();
+    if(fsm_water_state == WATER_OFF) {
+        detect();
     }
 }
 
-void detect2() {
-    //state machine
-    switch (fsm_state) {
-        case OFF:
+void detect() {
+    // The following is a very simple state machine
+    switch (fsm_detect_state) {
+        case DETECT_OFF:
             if(digitalRead(pirPin) == HIGH) {
-                fsm_state = OFF_WAIT;
-                highIn = millis();
-                Console.println("detecting, moving to OFF_WAIT");
+                fsm_detect_state = DETECT_OFF_WAIT;
+                detectTime = millis();
+                Console.println("detecting, moving to DETECT_OFF_WAIT");
             }
             break;
-        case OFF_WAIT:
+        case DETECT_OFF_WAIT:
             if(digitalRead(pirPin) == LOW) {
-                Console.println("stopped detecting, moving to OFF");
-                fsm_state = OFF;
+                Console.println("stopped detecting, moving to DETECT_OFF");
+                fsm_detect_state = DETECT_OFF;
             }
-            else if(millis() - onTime < 30000) {
-                Console.println("was ON 5 seconds ago, moving to OFF");
-                fsm_state = OFF;
+            else if(millis() - valveOpenTime < minTimeSinceOn) {
+                Console.println("not enough time since last DETECT_ON");
             }
-            else if(millis() - highIn > minHighTime) {
-                Console.println("still detecting, moving to ON"); 
-                fsm_state = ON;
+            else if(millis() - detectTime > maxDetectTime) {
+                Console.println("detecting for too long");
+            }
+            else if(millis() - detectTime > minDetectTime) {
+                Console.println("still detecting, moving to DETECT_ON"); 
+                fsm_detect_state = DETECT_ON;
             }
             break;
-        case ON:
+        case DETECT_ON:
             Console.print("Motion detected at ");
             Console.print(millis() / 1000);
             Console.println(" sec");
 
-            Console.println("opening valve, moving to ON_WAIT");
+            Console.println("opening valve, moving to DETECT_ON_WAIT");
             digitalWrite(ledPin, HIGH);
             digitalWrite(valvePin, HIGH);
 
-            onTime = millis();
-            fsm_state = ON_WAIT;
+            valveOpenTime = millis();
+            fsm_detect_state = DETECT_ON_WAIT;
             break;
-        case ON_WAIT:
-            if(millis() - onTime > 1000) {
-                Console.println("closing valve, moving to OFF");
+        case DETECT_ON_WAIT:
+            if(millis() - valveOpenTime > 1000) {
+                Console.println("closing valve, moving to DETECT_OFF_WAIT");
                 digitalWrite(ledPin, LOW);
                 digitalWrite(valvePin, LOW);
-                fsm_state = OFF;
+                fsm_detect_state = DETECT_OFF_WAIT;
             }
             break;
         default:
@@ -139,99 +141,52 @@ void detect2() {
 }
 
 void water() {
-    if(digitalRead(buttonPin) == HIGH){
-        if(startWatering > 0 && ((millis() - startWatering) > 2000)){
-            // Stop watering
-            Console.println("stopping water");
-            startWatering = 0;
-            digitalWrite(valvePin, LOW);
-        }
-        else{
-            Console.println("start of watering");
-            startWatering = millis();
-            digitalWrite(valvePin, HIGH);
-        }
-        delay(1000);
-    }
-    if(startWatering > 0){
-        if((millis() - startWatering) > 1800000){
-            // Stop watering
-            startWatering = 0;
-            Console.print("Stopping water after ");
-            Console.print((millis() - startWatering) / 1000);
-            Console.println(" sec");
-            digitalWrite(valvePin, LOW);
-        }
-    }
-}
-
-////////////////////////////
-// Detect motion and open valve
-void detect() {
-    if(digitalRead(pirPin) == HIGH) {
-        if(!motion && takeHighTime) {
-            highIn = millis();
-            takeHighTime = false;
-            Console.println("Taking high time");
-        }
-        if(!motion && (millis() - highIn > minHighTime)) {
+    switch (fsm_water_state) {
+        case WATER_OFF:
+            fsm_water_prev_state = WATER_OFF;
+            if(digitalRead(buttonPin) == HIGH) {
+                fsm_water_state = BUTTON_PRESSED;
+                Console.println("button pressed, moving to BUTTON_PRESSED");
+            }
+            break;
+        case BUTTON_PRESSED:
+            if(digitalRead(buttonPin) == LOW) {
+                if(fsm_water_prev_state == WATER_OFF) {
+                    fsm_water_state = WATER_ON;
+                    Console.println("watering activated, moving to WATER_ON");
+                }
+                else if(fsm_water_prev_state == WATER_ON_WAIT) {
+                    fsm_water_state = WATER_OFF;
+                    Console.println("watering stopped, closing valve, moving to WATER_OFF");
+                    digitalWrite(ledPin, LOW);
+                    digitalWrite(valvePin, LOW);
+                    fsm_water_state = WATER_OFF;
+                }
+            }
+            break;
+        case WATER_ON:
+            Console.println("opening valve, moving to WATER_ON_WAIT");
             digitalWrite(ledPin, HIGH);
             digitalWrite(valvePin, HIGH);
 
-            // Makes sure we wait for a transition to LOW before any further
-            // output is made:
-            motion = true;
-            Console.println("---");
-            Console.print("Motion detected at ");
-            Console.print(millis() / 1000);
-            Console.println(" sec");
-            delay(50);
-        }
-        // If it's been too long in the high state, close the valve and 
-        // backoff
-        if(millis() - highIn > maxHighTime){
-            digitalWrite(valvePin, LOW);
-            if(expDelay >= 600000) {
-                Console.println("Error! Too long in high state. Exiting.");
-                delay(500);
-                exit(0);
+            wateringTime = millis();
+            fsm_water_state = WATER_ON_WAIT;
+            break;
+        case WATER_ON_WAIT:
+            fsm_water_prev_state = WATER_ON_WAIT;
+            if(millis() - wateringTime > wateringPeriod) {
+                Console.println("time elapsed, closing valve, moving to WATER_OFF");
+                digitalWrite(ledPin, LOW);
+                digitalWrite(valvePin, LOW);
+                fsm_water_state = WATER_OFF;
             }
-            Console.print("Too long, closing valve, waiting for ");
-            Console.print(expDelay / 1000);
-            Console.println(" sec");
-            delay(expDelay);
-            expDelay = expDelay * 2;
-        }
-        takeLowTime = true;
-    }
-
-    if(digitalRead(pirPin) == LOW)
-    {
-        if(motion && takeLowTime)
-        {
-            // Save the time of the transition from HIGH to LOW
-            lowIn = millis();
-            // Make sure this is only done at the start of a LOW phase
-            takeLowTime = false;
-            Console.println("Taking low time");
-        }
-        // If the sensor is LOW for more than the given pause,
-        // we assume that no more motion is going to happen
-        if(motion && (millis() - lowIn > pause))
-        {
-            digitalWrite(ledPin, LOW);
-            digitalWrite(valvePin, LOW);
-
-            // Makes sure this block of code is only executed again after
-            // a new motion sequence has been detected
-            motion = false;
-            Console.print("Motion ended at ");
-            Console.print((millis() - pause) / 1000);
-            Console.println(" sec");
-            delay(50);
-        }
-        takeHighTime = true;
-        expDelay = 4000;
-
+            else if(digitalRead(buttonPin) == HIGH) {
+                fsm_water_state = BUTTON_PRESSED;
+                Console.println("button pressed, moving to BUTTON_PRESSED");
+            }
+            break;
+        default:
+            Console.println("default case reached");
+            break;
     }
 }
