@@ -1,4 +1,6 @@
-#include <Console.h>
+#include <aws_iot_mqtt.h>
+#include <aws_iot_version.h>
+#include "aws_iot_config.h"
 
 // The time we give the sensor to calibrate
 int calibrationTime = 10;
@@ -36,6 +38,9 @@ int ledPin = 13;
 int valvePin = 9;
 int buttonPin = 12;
 
+aws_iot_mqtt_client cloud;
+boolean cloud_connected = false;
+int rc = -100;
 
 //SETUP
 void setup()
@@ -64,7 +69,43 @@ void setup()
         delay(800);
     }
     log(" done");
-    delay(50);
+
+    // Connect to AWS IoT
+    log("connecting to cloud");
+    log(AWS_IOT_CLIENT_ID);
+    rc = cloud.setup(AWS_IOT_CLIENT_ID);
+    if(rc == 0) {
+        log("setup succeeded");
+        rc = cloud.config(AWS_IOT_MQTT_HOST, AWS_IOT_MQTT_PORT,
+                AWS_IOT_ROOT_CA_FILENAME, AWS_IOT_PRIVATE_KEY_FILENAME,
+                AWS_IOT_CERTIFICATE_FILENAME);
+        if(rc == 0) {
+            rc = cloud.connect();
+            if(rc == 0) {
+                rc = cloud.subscribe("topic1", 1, msg_callback);
+                if(rc != 0) {
+                    log("subscription failed!");
+                    Serial.println(rc);
+                }
+                else {
+                    cloud_connected = true;
+                    log("subscription succeeded");
+                }
+            }
+            else {
+                log("connection to cloud failed!");
+                Serial.println(rc);
+            }
+        }
+        else {
+            log("cloud config failed");
+            Serial.println(rc);
+        }
+    }
+    else {
+        log("cloud setup failed with code");
+        Serial.println(rc);
+    }
     log("setup finished, looping");
 }
 
@@ -179,10 +220,33 @@ void water() {
     }
 }
 
+
 void log(String message) {
     Serial.println(message);
+
+    if(cloud_connected) {
+        Serial.println("publishing to topic1");
+        rc = cloud.publish("topic1", message.c_str(), message.length(), 1, false);
+        if(rc != 0) {
+            Serial.println(F("publish failed!"));
+            Serial.println(rc);
+        }
+    }
+
 }
 
 void print(String message) {
     Serial.print(message);
+}
+
+// Basic callback function that prints out the message
+void msg_callback(char* src, unsigned int len, Message_status_t flag) {
+    if(flag == STATUS_NORMAL) {
+        Serial.println("CALLBACK:");
+        int i;
+        for(i = 0; i < (int)(len); i++) {
+            Serial.print(src[i]);
+        }
+        Serial.println("");
+    }
 }
